@@ -1,9 +1,8 @@
-# SmarterSmokerController
+# Smarter Smoker
 
 An experimental, Wi-Fi-first controller for compatible Smarter Grills/Taylor
-pellet-grill controllers. The primary application is Flutter-based and supports
-Android and iOS source builds. The original native Android BLE tester remains as
-a protocol-testing reference.
+pellet-smoker controllers. The Flutter application supports Android and iOS
+source builds from a single project.
 
 ## Features
 
@@ -15,11 +14,32 @@ a protocol-testing reference.
 - Three food-probe readings with locally stored software alarm targets
 - Visual, audible, and haptic probe pre-alarms and target alarms
 - Public lock-screen notifications for probe alerts on Android
+- Smoker-ready sound and lock-screen notification at the chamber setpoint
 - Shared binary protocol codec with tests
 - Responsive Material 3 dashboard and diagnostics log
 
-See [flutter_app/README.md](flutter_app/README.md) for build instructions and
-[docs/wifi-mqtt-protocol.md](docs/wifi-mqtt-protocol.md) for the protocol notes.
+See [docs/wifi-mqtt-protocol.md](docs/wifi-mqtt-protocol.md) for the
+reverse-engineered protocol notes.
+
+## Development
+
+From the repository root:
+
+```text
+flutter pub get
+flutter test
+flutter analyze
+flutter run
+```
+
+Build an Android debug APK with:
+
+```text
+flutter build apk --debug
+```
+
+Android and iOS BLE/network permissions are configured. Building and signing
+the iOS application requires Xcode on macOS.
 
 ## Project status
 
