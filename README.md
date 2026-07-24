@@ -2,7 +2,7 @@
 
 An experimental, Wi-Fi-first controller application for compatible Smarter Grills/Taylor
 pellet-smoker controllers. The Flutter application supports Android and iOS
-source builds from a single project.
+source builds from a single project. This project was built with ChatGPT and Codex.
 
 ## Features
 
