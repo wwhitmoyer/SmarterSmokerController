@@ -57,7 +57,11 @@ the iOS application requires Xcode on macOS.
 
 This is an independent reverse-engineering and interoperability project. It is
 not affiliated with or endorsed by the grill manufacturer or app vendor. Use it
-only with equipment you own.
+only with equipment you own. The project is in its final stages prior to release,
+though its unlikely it will ever be uploaded to any app stores. I may add more 
+features in the future but for now its been a fun project and does everything I
+need it to do. If you find it usefull or feel the need to continue the project
+please feel free to do so.
 
 ## Security
 
