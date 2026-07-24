@@ -27,6 +27,24 @@ void main() {
     );
   });
 
+  test('grill temperatures enforce unit-specific controller limits', () {
+    expect(() => GrillProtocol.grillTemperature(159), throwsRangeError);
+    expect(
+      GrillProtocol.toHex(GrillProtocol.grillTemperature(160)),
+      'FA09FE0501010600FF',
+    );
+    expect(
+      () => GrillProtocol.grillTemperature(70, fahrenheit: false),
+      throwsRangeError,
+    );
+    expect(
+      GrillProtocol.toHex(
+        GrillProtocol.grillTemperature(71, fahrenheit: false),
+      ),
+      'FA09FE0501000701FF',
+    );
+  });
+
   test('power state is decoded', () {
     final on = GrillProtocol.decode(
       GrillProtocol.fromHex('FA18FE0B00010000000000000000000000000000000000FF'),

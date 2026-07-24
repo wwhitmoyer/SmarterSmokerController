@@ -44,6 +44,10 @@ Set grill temperature: `FA 09 FE 05 01 H T O FF`.
 
 Set probe temperature: `FA 09 FE 05 PP H T O FF`, where `PP` is `02` through `07` for probes 1 through 6.
 
+The Flutter application does not send probe targets to the controller. Its three
+probe targets are software-only alarm thresholds stored locally on the device.
+The packet above is retained only as a reverse-engineering protocol note.
+
 ## Wi-Fi provisioning
 
 The vendor APK's current setup flow sends Wi-Fi credentials over BLE, not MQTT.

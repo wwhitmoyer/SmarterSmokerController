@@ -12,7 +12,7 @@ a protocol-testing reference.
 - BLE Wi-Fi provisioning for 2.4 GHz networks
 - Automatic grill status and temperature refresh
 - Grill power and temperature control
-- Three food-probe readings and targets
+- Three food-probe readings with locally stored software alarm targets
 - Shared binary protocol codec with tests
 - Responsive Material 3 dashboard and diagnostics log
 
@@ -30,4 +30,3 @@ only with equipment you own.
 The vendor system uses unencrypted MQTT and a shared credential embedded in the
 vendor APK. Device IDs and cook data should be treated as sensitive. Do not scan,
 enumerate, or attempt to access devices you do not own.
-

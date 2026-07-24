@@ -27,6 +27,15 @@ class GrillFrame {
 }
 
 abstract final class GrillProtocol {
+  static const int minimumGrillFahrenheit = 160;
+  static const int maximumGrillFahrenheit = 500;
+  static const int minimumGrillCelsius = 71;
+  static const int maximumGrillCelsius = 260;
+  static const int minimumProbeFahrenheit = 0;
+  static const int maximumProbeFahrenheit = 500;
+  static const int minimumProbeCelsius = 0;
+  static const int maximumProbeCelsius = 260;
+
   static Uint8List get queryStatus => _query(0x0b, 0x01);
   static Uint8List get querySetTemperatures => _query(0x0d, 0x01);
   static Uint8List get queryActualTemperatures => _query(0x0e, 0x01);
@@ -38,12 +47,27 @@ abstract final class GrillProtocol {
   static Uint8List units({required bool fahrenheit}) =>
       _query(0x09, fahrenheit ? 0x01 : 0x02);
 
-  static Uint8List grillTemperature(int temperature) =>
-      _temperature(target: 1, temperature: temperature);
+  static Uint8List grillTemperature(int temperature, {bool fahrenheit = true}) {
+    final minimum = fahrenheit ? minimumGrillFahrenheit : minimumGrillCelsius;
+    final maximum = fahrenheit ? maximumGrillFahrenheit : maximumGrillCelsius;
+    if (temperature < minimum || temperature > maximum) {
+      throw RangeError.range(temperature, minimum, maximum, 'temperature');
+    }
+    return _temperature(target: 1, temperature: temperature);
+  }
 
-  static Uint8List probeTemperature(int probe, int temperature) {
+  static Uint8List probeTemperature(
+    int probe,
+    int temperature, {
+    bool fahrenheit = true,
+  }) {
     if (probe < 1 || probe > 3) {
       throw RangeError.range(probe, 1, 3, 'probe');
+    }
+    final minimum = fahrenheit ? minimumProbeFahrenheit : minimumProbeCelsius;
+    final maximum = fahrenheit ? maximumProbeFahrenheit : maximumProbeCelsius;
+    if (temperature < minimum || temperature > maximum) {
+      throw RangeError.range(temperature, minimum, maximum, 'temperature');
     }
     return _temperature(target: probe + 1, temperature: temperature);
   }

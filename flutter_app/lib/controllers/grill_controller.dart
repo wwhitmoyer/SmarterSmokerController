@@ -20,6 +20,7 @@ class GrillController extends ChangeNotifier {
       _discovery = discovery ?? GrillBleDiscovery();
 
   static const _savedIdKey = 'saved_grill_id';
+  static const _probeTargetKeyPrefix = 'probe_target_';
   final GrillMqttService _mqtt;
   final GrillBleDiscovery _discovery;
   final logs = <String>[];
@@ -47,6 +48,10 @@ class GrillController extends ChangeNotifier {
       notifyListeners();
     });
     final preferences = await SharedPreferences.getInstance();
+    probeTargets = List<int>.generate(
+      3,
+      (index) => preferences.getInt('$_probeTargetKeyPrefix${index + 1}') ?? -1,
+    );
     deviceId = preferences.getString(_savedIdKey);
     if (deviceId == null || deviceId!.isEmpty) {
       phase = GrillConnectionPhase.needsId;
@@ -170,7 +175,7 @@ class GrillController extends ChangeNotifier {
 
   void setGrillTarget(int value) {
     _publish(
-      GrillProtocol.grillTemperature(value),
+      GrillProtocol.grillTemperature(value, fahrenheit: fahrenheit),
       'set grill temperature $value',
     );
     grillTarget = value;
@@ -178,12 +183,27 @@ class GrillController extends ChangeNotifier {
   }
 
   void setProbeTarget(int probe, int value) {
-    _publish(
-      GrillProtocol.probeTemperature(probe, value),
-      'set probe $probe temperature $value',
-    );
+    if (probe < 1 || probe > probeTargets.length) {
+      throw RangeError.range(probe, 1, probeTargets.length, 'probe');
+    }
+    final minimum = fahrenheit
+        ? GrillProtocol.minimumProbeFahrenheit
+        : GrillProtocol.minimumProbeCelsius;
+    final maximum = fahrenheit
+        ? GrillProtocol.maximumProbeFahrenheit
+        : GrillProtocol.maximumProbeCelsius;
+    if (value < minimum || value > maximum) {
+      throw RangeError.range(value, minimum, maximum, 'value');
+    }
     probeTargets = List<int>.from(probeTargets)..[probe - 1] = value;
+    _log('Probe $probe software target set to $value');
     notifyListeners();
+    unawaited(_persistProbeTarget(probe, value));
+  }
+
+  Future<void> _persistProbeTarget(int probe, int value) async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setInt('$_probeTargetKeyPrefix$probe', value);
   }
 
   void setUnits({required bool useFahrenheit}) {
@@ -213,7 +233,6 @@ class GrillController extends ChangeNotifier {
         }
       case GrillFrameType.setTemperatures:
         if (frame.temperatures.length == 7) {
-          probeTargets = frame.temperatures.take(3).toList();
           grillTarget = frame.temperatures[6];
         }
       case GrillFrameType.pidFan:
