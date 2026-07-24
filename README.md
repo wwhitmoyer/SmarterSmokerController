@@ -1,6 +1,6 @@
 # Smarter Smoker
 
-An experimental, Wi-Fi-first controller for compatible Smarter Grills/Taylor
+An experimental, Wi-Fi-first controller application for compatible Smarter Grills/Taylor
 pellet-smoker controllers. The Flutter application supports Android and iOS
 source builds from a single project.
 
