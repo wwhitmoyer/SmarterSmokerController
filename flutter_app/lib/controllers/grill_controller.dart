@@ -14,13 +14,17 @@ enum GrillConnectionPhase {
   error,
 }
 
+enum ProbeAlertLevel { none, preAlarm, targetReached }
+
 class GrillController extends ChangeNotifier {
   GrillController({GrillMqttService? mqtt, GrillBleDiscovery? discovery})
     : _mqtt = mqtt ?? GrillMqttService(),
       _discovery = discovery ?? GrillBleDiscovery();
 
   static const _savedIdKey = 'saved_grill_id';
+  static const _grillTargetKey = 'grill_target';
   static const _probeTargetKeyPrefix = 'probe_target_';
+  static const probePreAlarmDelta = 5;
   final GrillMqttService _mqtt;
   final GrillBleDiscovery _discovery;
   final logs = <String>[];
@@ -38,6 +42,28 @@ class GrillController extends ChangeNotifier {
   List<int> probeTemperatures = List<int>.filled(3, -1);
   List<int> probeTargets = List<int>.filled(3, -1);
   bool provisioningWifi = false;
+  int? _pendingGrillTarget;
+  DateTime? _pendingGrillTargetUntil;
+
+  List<ProbeAlertLevel> get probeAlertLevels => List.generate(
+    probeTemperatures.length,
+    (index) => probeAlertLevel(
+      current: probeTemperatures[index],
+      target: probeTargets[index],
+    ),
+  );
+
+  static ProbeAlertLevel probeAlertLevel({
+    required int current,
+    required int target,
+  }) {
+    if (current < 0 || target < 0) return ProbeAlertLevel.none;
+    if (current >= target) return ProbeAlertLevel.targetReached;
+    if (current >= target - probePreAlarmDelta) {
+      return ProbeAlertLevel.preAlarm;
+    }
+    return ProbeAlertLevel.none;
+  }
 
   Future<void> initialize() async {
     _payloadSubscription = _mqtt.payloads.listen(_handlePayload);
@@ -48,6 +74,7 @@ class GrillController extends ChangeNotifier {
       notifyListeners();
     });
     final preferences = await SharedPreferences.getInstance();
+    grillTarget = preferences.getInt(_grillTargetKey);
     probeTargets = List<int>.generate(
       3,
       (index) => preferences.getInt('$_probeTargetKeyPrefix${index + 1}') ?? -1,
@@ -179,7 +206,15 @@ class GrillController extends ChangeNotifier {
       'set grill temperature $value',
     );
     grillTarget = value;
+    _pendingGrillTarget = value;
+    _pendingGrillTargetUntil = DateTime.now().add(const Duration(seconds: 15));
     notifyListeners();
+    unawaited(_persistGrillTarget(value));
+  }
+
+  Future<void> _persistGrillTarget(int value) async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setInt(_grillTargetKey, value);
   }
 
   void setProbeTarget(int probe, int value) {
@@ -228,12 +263,31 @@ class GrillController extends ChangeNotifier {
         if (frame.powerOn != null) powerOn = frame.powerOn;
       case GrillFrameType.actualTemperatures:
         if (frame.temperatures.length == 7) {
-          probeTemperatures = frame.temperatures.take(3).toList();
+          probeTemperatures = frame.temperatures.take(3).map((temperature) {
+            return GrillProtocol.isValidProbeReading(
+                  temperature,
+                  fahrenheit: fahrenheit,
+                )
+                ? temperature
+                : -1;
+          }).toList();
           grillTemperature = frame.temperatures[6];
         }
       case GrillFrameType.setTemperatures:
         if (frame.temperatures.length == 7) {
-          grillTarget = frame.temperatures[6];
+          final receivedTarget = frame.temperatures[6];
+          final pendingTarget = _pendingGrillTarget;
+          final pendingUntil = _pendingGrillTargetUntil;
+          final waitingForAcknowledgement =
+              pendingTarget != null &&
+              pendingUntil != null &&
+              DateTime.now().isBefore(pendingUntil);
+          if (!waitingForAcknowledgement || receivedTarget == pendingTarget) {
+            grillTarget = receivedTarget;
+            _pendingGrillTarget = null;
+            _pendingGrillTargetUntil = null;
+            unawaited(_persistGrillTarget(receivedTarget));
+          }
         }
       case GrillFrameType.pidFan:
       case GrillFrameType.shutdownTimer:

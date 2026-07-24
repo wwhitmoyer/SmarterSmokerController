@@ -11,6 +11,8 @@ Cross-platform migration of the Android BLE tester into a Wi-Fi-first grill cont
 - Automatic status and temperature refresh every 10 seconds
 - Power control with confirmation and optimistic OFF state
 - Grill control and three locally stored software probe targets
+- Probe pre-alarms at 5° below target plus target-reached alerts
+- Android lock-screen notifications that open the app for acknowledgement
 - Shared binary protocol codec and tests
 - Responsive Material 3 dashboard with advanced diagnostics collapsed by default
 

@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:smarter_grill/controllers/grill_controller.dart';
 import 'package:smarter_grill/protocol/grill_protocol.dart';
 import 'package:smarter_grill/services/grill_ble_discovery.dart';
 
@@ -71,5 +72,36 @@ void main() {
       'secret',
     );
     expect(GrillProtocol.toHex(frame), 'FA11FB4D7957696669F1736563726574FF');
+  });
+
+  test('probe alerts transition at five degrees below target', () {
+    expect(
+      GrillController.probeAlertLevel(current: -1, target: 165),
+      ProbeAlertLevel.none,
+    );
+    expect(
+      GrillController.probeAlertLevel(current: 159, target: 165),
+      ProbeAlertLevel.none,
+    );
+    expect(
+      GrillController.probeAlertLevel(current: 160, target: 165),
+      ProbeAlertLevel.preAlarm,
+    );
+    expect(
+      GrillController.probeAlertLevel(current: 164, target: 165),
+      ProbeAlertLevel.preAlarm,
+    );
+    expect(
+      GrillController.probeAlertLevel(current: 165, target: 165),
+      ProbeAlertLevel.targetReached,
+    );
+  });
+
+  test('out-of-range probe readings are treated as disconnected', () {
+    expect(GrillProtocol.isValidProbeReading(500), isTrue);
+    expect(GrillProtocol.isValidProbeReading(501), isFalse);
+    expect(GrillProtocol.isValidProbeReading(960), isFalse);
+    expect(GrillProtocol.isValidProbeReading(260, fahrenheit: false), isTrue);
+    expect(GrillProtocol.isValidProbeReading(261, fahrenheit: false), isFalse);
   });
 }

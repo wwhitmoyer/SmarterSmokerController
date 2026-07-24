@@ -36,6 +36,12 @@ abstract final class GrillProtocol {
   static const int minimumProbeCelsius = 0;
   static const int maximumProbeCelsius = 260;
 
+  static bool isValidProbeReading(int temperature, {bool fahrenheit = true}) {
+    final minimum = fahrenheit ? minimumProbeFahrenheit : minimumProbeCelsius;
+    final maximum = fahrenheit ? maximumProbeFahrenheit : maximumProbeCelsius;
+    return temperature >= minimum && temperature <= maximum;
+  }
+
   static Uint8List get queryStatus => _query(0x0b, 0x01);
   static Uint8List get querySetTemperatures => _query(0x0d, 0x01);
   static Uint8List get queryActualTemperatures => _query(0x0e, 0x01);

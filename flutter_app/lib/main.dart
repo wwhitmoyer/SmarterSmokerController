@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import 'controllers/grill_controller.dart';
 import 'protocol/grill_protocol.dart';
+import 'services/alarm_audio_service.dart';
 
 void main() => runApp(const SmarterGrillApp());
 
@@ -41,6 +42,10 @@ class GrillDashboard extends StatefulWidget {
 
 class _GrillDashboardState extends State<GrillDashboard> {
   late final GrillController controller;
+  final AlarmAudioService _alarmAudio = AlarmAudioService();
+  List<ProbeAlertLevel> _probeAlerts = List.filled(3, ProbeAlertLevel.none);
+  final Set<int> _acknowledgedTargetAlarms = {};
+  bool _targetAlarmPlaying = false;
 
   @override
   void initState() {
@@ -50,13 +55,109 @@ class _GrillDashboardState extends State<GrillDashboard> {
   }
 
   void _changed() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    final nextAlerts = controller.probeAlertLevels;
+    final newlyTriggered = <({int probe, ProbeAlertLevel level})>[];
+    for (var index = 0; index < nextAlerts.length; index++) {
+      if (_probeAlerts[index] != ProbeAlertLevel.none &&
+          nextAlerts[index].index < _probeAlerts[index].index) {
+        _alarmAudio.cancelProbeAlert(index + 1);
+      }
+      if (nextAlerts[index] != ProbeAlertLevel.targetReached) {
+        _acknowledgedTargetAlarms.remove(index);
+      }
+      if (nextAlerts[index].index > _probeAlerts[index].index) {
+        newlyTriggered.add((probe: index + 1, level: nextAlerts[index]));
+      }
+    }
+    _probeAlerts = nextAlerts;
+    setState(() {});
+    if (newlyTriggered.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final reachedTarget = newlyTriggered.any(
+          (event) => event.level == ProbeAlertLevel.targetReached,
+        );
+        if (reachedTarget) {
+          _targetAlarmPlaying = true;
+          for (final event in newlyTriggered.where(
+            (event) => event.level == ProbeAlertLevel.targetReached,
+          )) {
+            final index = event.probe - 1;
+            _alarmAudio.startTargetAlarm(
+              probe: event.probe,
+              current: controller.probeTemperatures[index],
+              target: controller.probeTargets[index],
+            );
+          }
+        } else if (!_hasUnacknowledgedTargetAlarm) {
+          for (final event in newlyTriggered) {
+            final index = event.probe - 1;
+            _alarmAudio.playPreAlarm(
+              probe: event.probe,
+              current: controller.probeTemperatures[index],
+              target: controller.probeTargets[index],
+            );
+          }
+        }
+        HapticFeedback.mediumImpact();
+        final messenger = ScaffoldMessenger.of(context);
+        messenger.hideCurrentSnackBar();
+        messenger.showSnackBar(
+          SnackBar(
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 8),
+            backgroundColor:
+                newlyTriggered.any(
+                  (event) => event.level == ProbeAlertLevel.targetReached,
+                )
+                ? Theme.of(context).colorScheme.error
+                : const Color(0xffb26a00),
+            content: Text(
+              newlyTriggered
+                  .map(
+                    (event) => event.level == ProbeAlertLevel.targetReached
+                        ? 'Probe ${event.probe} reached its target'
+                        : 'Probe ${event.probe} is within '
+                              '${GrillController.probePreAlarmDelta}° of its target',
+                  )
+                  .join(' • '),
+            ),
+          ),
+        );
+      });
+    }
+    if (_targetAlarmPlaying && !_hasUnacknowledgedTargetAlarm) {
+      _targetAlarmPlaying = false;
+      _alarmAudio.stop();
+    }
+  }
+
+  bool get _hasUnacknowledgedTargetAlarm {
+    for (var index = 0; index < _probeAlerts.length; index++) {
+      if (_probeAlerts[index] == ProbeAlertLevel.targetReached &&
+          !_acknowledgedTargetAlarms.contains(index)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void _acknowledgeProbeAlarm(int index) {
+    _acknowledgedTargetAlarms.add(index);
+    _alarmAudio.cancelProbeAlert(index + 1);
+    if (!_hasUnacknowledgedTargetAlarm) {
+      _targetAlarmPlaying = false;
+      _alarmAudio.stop();
+    }
+    setState(() {});
   }
 
   @override
   void dispose() {
     controller.removeListener(_changed);
     controller.dispose();
+    _alarmAudio.dispose();
     super.dispose();
   }
 
@@ -104,6 +205,9 @@ class _GrillDashboardState extends State<GrillDashboard> {
                               child: _ProbeCard(
                                 controller: controller,
                                 index: i,
+                                acknowledged: _acknowledgedTargetAlarms
+                                    .contains(i),
+                                onAcknowledge: () => _acknowledgeProbeAlarm(i),
                               ),
                             ),
                         ],
@@ -384,31 +488,50 @@ class _TemperatureValue extends StatelessWidget {
 }
 
 class _ProbeCard extends StatelessWidget {
-  const _ProbeCard({required this.controller, required this.index});
+  const _ProbeCard({
+    required this.controller,
+    required this.index,
+    required this.acknowledged,
+    required this.onAcknowledge,
+  });
   final GrillController controller;
   final int index;
+  final bool acknowledged;
+  final VoidCallback onAcknowledge;
 
   @override
   Widget build(BuildContext context) {
     final current = controller.probeTemperatures[index];
     final target = controller.probeTargets[index];
+    final alert = controller.probeAlertLevels[index];
+    final alertColor = switch (alert) {
+      ProbeAlertLevel.none => null,
+      ProbeAlertLevel.preAlarm => const Color(0xffffe0a3),
+      ProbeAlertLevel.targetReached => const Color(0xffffc9c2),
+    };
     return Card.filled(
-      color: Colors.white,
+      color: alertColor ?? Colors.white,
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
-        onTap: () => _temperatureDialog(
-          context,
-          target > 0 ? target : 165,
-          'Probe ${index + 1} target',
-          (value) => controller.setProbeTarget(index + 1, value),
-          minimum: controller.fahrenheit
-              ? GrillProtocol.minimumProbeFahrenheit
-              : GrillProtocol.minimumProbeCelsius,
-          maximum: controller.fahrenheit
-              ? GrillProtocol.maximumProbeFahrenheit
-              : GrillProtocol.maximumProbeCelsius,
-          unit: controller.fahrenheit ? '°F' : '°C',
-        ),
+        onTap: () {
+          if (alert == ProbeAlertLevel.targetReached && !acknowledged) {
+            onAcknowledge();
+            return;
+          }
+          _temperatureDialog(
+            context,
+            target > 0 ? target : 165,
+            'Probe ${index + 1} target',
+            (value) => controller.setProbeTarget(index + 1, value),
+            minimum: controller.fahrenheit
+                ? GrillProtocol.minimumProbeFahrenheit
+                : GrillProtocol.minimumProbeCelsius,
+            maximum: controller.fahrenheit
+                ? GrillProtocol.maximumProbeFahrenheit
+                : GrillProtocol.maximumProbeCelsius,
+            unit: controller.fahrenheit ? '°F' : '°C',
+          );
+        },
         child: Padding(
           padding: const EdgeInsets.all(18),
           child: Row(
@@ -437,12 +560,48 @@ class _ProbeCard extends StatelessWidget {
                   ],
                 ),
               ),
-              Text(
-                target < 0 ? 'Set target' : 'Target $target°',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.primary,
-                  fontWeight: FontWeight.w600,
-                ),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  if (alert != ProbeAlertLevel.none)
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 5),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 3,
+                      ),
+                      decoration: BoxDecoration(
+                        color: alert == ProbeAlertLevel.targetReached
+                            ? Theme.of(context).colorScheme.error
+                            : const Color(0xff9a5b00),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        alert == ProbeAlertLevel.targetReached
+                            ? acknowledged
+                                  ? 'ACKNOWLEDGED'
+                                  : 'TAP TO ACK'
+                            : 'PRE-ALARM',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                  Text(
+                    target < 0 ? 'Set target' : 'Target $target°',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.primary,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  if (target >= 0)
+                    Text(
+                      'Pre-alarm ${target - GrillController.probePreAlarmDelta}°',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                ],
               ),
             ],
           ),

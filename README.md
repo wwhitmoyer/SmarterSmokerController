@@ -13,6 +13,8 @@ a protocol-testing reference.
 - Automatic grill status and temperature refresh
 - Grill power and temperature control
 - Three food-probe readings with locally stored software alarm targets
+- Visual, audible, and haptic probe pre-alarms and target alarms
+- Public lock-screen notifications for probe alerts on Android
 - Shared binary protocol codec with tests
 - Responsive Material 3 dashboard and diagnostics log
 
