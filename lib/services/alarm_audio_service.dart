@@ -67,6 +67,38 @@ class AlarmAudioService {
     }
   }
 
+  Future<void> scheduleTimerAlarm({
+    required String label,
+    required DateTime finishAt,
+  }) async {
+    try {
+      await _channel.invokeMethod<void>('scheduleTimerAlarm', {
+        'label': label,
+        'finishAt': finishAt.millisecondsSinceEpoch,
+      });
+    } on MissingPluginException {
+      // Background timer notifications are currently implemented on Android.
+    }
+  }
+
+  Future<void> cancelTimerAlarm() async {
+    try {
+      await _channel.invokeMethod<void>('cancelTimerAlarm');
+    } on MissingPluginException {
+      // Background timer notifications are currently implemented on Android.
+    }
+  }
+
+  Future<void> notifyTimerFinished(String label) async {
+    try {
+      await _channel.invokeMethod<void>('notifyTimerFinished', {
+        'label': label,
+      });
+    } on MissingPluginException {
+      await SystemSound.play(SystemSoundType.alert);
+    }
+  }
+
   Future<void> stop() async {
     try {
       await _channel.invokeMethod<void>('stopAlarm');

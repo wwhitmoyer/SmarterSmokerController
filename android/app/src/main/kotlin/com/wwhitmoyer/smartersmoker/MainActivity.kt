@@ -1,6 +1,7 @@
 package com.wwhitmoyer.smartersmoker
 
 import android.Manifest
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -11,10 +12,13 @@ import android.content.pm.PackageManager
 import android.media.AudioAttributes
 import android.media.Ringtone
 import android.media.RingtoneManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.OpenableColumns
+import android.util.Base64
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.plugin.common.MethodChannel
@@ -28,6 +32,8 @@ class MainActivity : FlutterActivity() {
     private var alarmRingtone: Ringtone? = null
     private var alarmRepeat: Runnable? = null
     private val notificationPlays = mutableListOf<Runnable>()
+    private var cookbookChannel: MethodChannel? = null
+    private var pendingCookbookFile: Map<String, String>? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -42,6 +48,7 @@ class MainActivity : FlutterActivity() {
                 notificationPermissionRequest,
             )
         }
+        captureCookbookIntent(intent)
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -90,6 +97,25 @@ class MainActivity : FlutterActivity() {
                     notificationManager().cancel(smokerReadyNotificationId)
                     result.success(null)
                 }
+                "scheduleTimerAlarm" -> {
+                    scheduleTimerAlarm(
+                        label = call.argument<String>("label") ?: "Cook timer",
+                        finishAt = call.argument<Number>("finishAt")?.toLong()
+                            ?: System.currentTimeMillis(),
+                    )
+                    result.success(null)
+                }
+                "cancelTimerAlarm" -> {
+                    cancelTimerAlarm()
+                    result.success(null)
+                }
+                "notifyTimerFinished" -> {
+                    cancelTimerAlarm()
+                    sendBroadcast(timerAlarmIntent(
+                        call.argument<String>("label") ?: "Cook timer",
+                    ))
+                    result.success(null)
+                }
                 "stopAlarm" -> {
                     stopAllSounds()
                     result.success(null)
@@ -97,6 +123,77 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+        cookbookChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "com.wwhitmoyer.smartersmoker/cookbook",
+        ).apply {
+            setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "getPendingCookbookFile" -> {
+                        result.success(pendingCookbookFile)
+                        pendingCookbookFile = null
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        captureCookbookIntent(intent)
+    }
+
+    private fun captureCookbookIntent(intent: Intent?) {
+        if (intent == null) return
+        val uri = when (intent.action) {
+            Intent.ACTION_SEND ->
+                @Suppress("DEPRECATION")
+                intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+                    ?: intent.clipData?.getItemAt(0)?.uri
+            Intent.ACTION_VIEW -> intent.data
+            else -> null
+        } ?: return
+        try {
+            val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                ?: return
+            val message = mapOf(
+                "name" to cookbookDisplayName(uri),
+                "base64" to Base64.encodeToString(bytes, Base64.NO_WRAP),
+            )
+            pendingCookbookFile = message
+            cookbookChannel?.invokeMethod("cookbookFileReceived", message)
+            // Keep the file pending until Dart explicitly requests it. During a
+            // cold start the Android channel exists before Dart has installed
+            // its method handler, so the eager notification can be missed.
+            android.util.Log.i(
+                "CookbookImport",
+                "Captured ${message["name"]} (${bytes.size} bytes)",
+            )
+        } catch (error: Exception) {
+            android.util.Log.e("CookbookImport", "Unable to read shared recipe", error)
+        }
+    }
+
+    private fun cookbookDisplayName(uri: Uri): String {
+        contentResolver.query(
+            uri,
+            arrayOf(OpenableColumns.DISPLAY_NAME),
+            null,
+            null,
+            null,
+        )?.use { cursor ->
+            if (
+                cursor.moveToFirst() &&
+                cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME) >= 0
+            ) {
+                return cursor.getString(
+                    cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME),
+                )
+            }
+        }
+        return uri.lastPathSegment ?: "recipe.cookbook"
     }
 
     private fun createNotificationChannel() {
@@ -172,6 +269,34 @@ class MainActivity : FlutterActivity() {
 
     private val smokerReadyNotificationId = 7100
     private fun notificationId(probe: Int) = 7200 + probe
+
+    private fun timerAlarmIntent(label: String) =
+        Intent(this, TimerAlarmReceiver::class.java).apply {
+            action = TimerAlarmReceiver.ACTION_TIMER_FINISHED
+            putExtra(TimerAlarmReceiver.EXTRA_LABEL, label)
+        }
+
+    private fun timerPendingIntent(label: String) = PendingIntent.getBroadcast(
+        this,
+        TimerAlarmReceiver.REQUEST_CODE,
+        timerAlarmIntent(label),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
+
+    private fun scheduleTimerAlarm(label: String, finishAt: Long) {
+        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        alarmManager.setAndAllowWhileIdle(
+            AlarmManager.RTC_WAKEUP,
+            finishAt,
+            timerPendingIntent(label),
+        )
+    }
+
+    private fun cancelTimerAlarm() {
+        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        alarmManager.cancel(timerPendingIntent("Cook timer"))
+        notificationManager().cancel(TimerAlarmReceiver.NOTIFICATION_ID)
+    }
 
     private fun showSmokerReadyNotification(current: Int?, target: Int?) {
         if (
