@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'controllers/grill_controller.dart';
+import 'protocol/grill_protocol.dart';
 
 void main() => runApp(const SmarterGrillApp());
 
@@ -329,6 +331,13 @@ class _GrillTemperatureCard extends StatelessWidget {
                 controller.grillTarget ?? 225,
                 'Grill target',
                 controller.setGrillTarget,
+                minimum: controller.fahrenheit
+                    ? GrillProtocol.minimumGrillFahrenheit
+                    : GrillProtocol.minimumGrillCelsius,
+                maximum: controller.fahrenheit
+                    ? GrillProtocol.maximumGrillFahrenheit
+                    : GrillProtocol.maximumGrillCelsius,
+                unit: controller.fahrenheit ? '°F' : '°C',
               ),
               child: _TemperatureValue(
                 label: 'TARGET · TAP TO SET',
@@ -392,6 +401,13 @@ class _ProbeCard extends StatelessWidget {
           target > 0 ? target : 165,
           'Probe ${index + 1} target',
           (value) => controller.setProbeTarget(index + 1, value),
+          minimum: controller.fahrenheit
+              ? GrillProtocol.minimumProbeFahrenheit
+              : GrillProtocol.minimumProbeCelsius,
+          maximum: controller.fahrenheit
+              ? GrillProtocol.maximumProbeFahrenheit
+              : GrillProtocol.maximumProbeCelsius,
+          unit: controller.fahrenheit ? '°F' : '°C',
         ),
         child: Padding(
           padding: const EdgeInsets.all(18),
@@ -607,42 +623,131 @@ Future<void> _temperatureDialog(
   BuildContext context,
   int initial,
   String title,
-  ValueChanged<int> onSave,
-) async {
-  var value = initial.toDouble().clamp(0, 999);
+  ValueChanged<int> onSave, {
+  required int minimum,
+  required int maximum,
+  required String unit,
+}) async {
   final result = await showDialog<int>(
     context: context,
-    builder: (context) => StatefulBuilder(
-      builder: (context, setState) => AlertDialog(
-        title: Text(title),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              '${value.round()}°',
-              style: Theme.of(context).textTheme.displayMedium,
-            ),
-            Slider(
-              min: 0,
-              max: 500,
-              divisions: 100,
-              value: value.clamp(0, 500).toDouble(),
-              onChanged: (next) => setState(() => value = next),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, value.round()),
-            child: const Text('Set temperature'),
-          ),
-        ],
-      ),
+    builder: (context) => _TemperatureDialog(
+      initial: initial,
+      title: title,
+      minimum: minimum,
+      maximum: maximum,
+      unit: unit,
     ),
   );
   if (result != null) onSave(result);
+}
+
+class _TemperatureDialog extends StatefulWidget {
+  const _TemperatureDialog({
+    required this.initial,
+    required this.title,
+    required this.minimum,
+    required this.maximum,
+    required this.unit,
+  });
+
+  final int initial;
+  final String title;
+  final int minimum;
+  final int maximum;
+  final String unit;
+
+  @override
+  State<_TemperatureDialog> createState() => _TemperatureDialogState();
+}
+
+class _TemperatureDialogState extends State<_TemperatureDialog> {
+  late int value;
+  late final TextEditingController textController;
+  String? validationMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    value = widget.initial.clamp(widget.minimum, widget.maximum);
+    textController = TextEditingController(text: value.toString());
+  }
+
+  @override
+  void dispose() {
+    textController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: Text(widget.title),
+    content: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          '$value${widget.unit}',
+          style: Theme.of(context).textTheme.displayMedium,
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: textController,
+          autofocus: true,
+          keyboardType: TextInputType.number,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+          decoration: InputDecoration(
+            labelText: 'Temperature',
+            suffixText: widget.unit,
+            errorText: validationMessage,
+            helperText:
+                'Allowed range: ${widget.minimum}–${widget.maximum}${widget.unit}',
+          ),
+          onChanged: (text) {
+            final typed = int.tryParse(text);
+            setState(() {
+              if (typed == null ||
+                  typed < widget.minimum ||
+                  typed > widget.maximum) {
+                validationMessage =
+                    'Enter a value from ${widget.minimum} to ${widget.maximum}';
+              } else {
+                value = typed;
+                validationMessage = null;
+              }
+            });
+          },
+        ),
+        const SizedBox(height: 8),
+        Slider(
+          min: widget.minimum.toDouble(),
+          max: widget.maximum.toDouble(),
+          divisions: widget.maximum - widget.minimum,
+          value: value.toDouble(),
+          onChanged: (next) {
+            final rounded = next.round();
+            setState(() {
+              value = rounded;
+              validationMessage = null;
+              final text = rounded.toString();
+              textController.value = TextEditingValue(
+                text: text,
+                selection: TextSelection.collapsed(offset: text.length),
+              );
+            });
+          },
+        ),
+      ],
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('Cancel'),
+      ),
+      FilledButton(
+        onPressed: validationMessage == null && textController.text.isNotEmpty
+            ? () => Navigator.pop(context, value)
+            : null,
+        child: const Text('Set temperature'),
+      ),
+    ],
+  );
 }
