@@ -1,6 +1,8 @@
 # Smarter Grills Wi-Fi/MQTT protocol
 
-This project treats MQTT over Wi-Fi as the primary transport. The existing BLE tester remains available as a fallback and as a way to capture unknown frames. Both transports carry the same raw binary frames.
+This project treats MQTT over Wi-Fi as the primary transport. The Flutter app
+retains BLE discovery and Wi-Fi provisioning as a setup fallback. Both
+transports carry the same raw binary frames.
 
 ## Transport
 
