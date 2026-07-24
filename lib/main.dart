@@ -1,9 +1,14 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'controllers/cook_timer_controller.dart';
+import 'controllers/cook_plan_controller.dart';
 import 'controllers/grill_controller.dart';
 import 'protocol/grill_protocol.dart';
 import 'services/alarm_audio_service.dart';
+import 'services/cookbook_import_service.dart';
 
 void main() => runApp(const SmarterSmokerApp());
 
@@ -43,6 +48,11 @@ class GrillDashboard extends StatefulWidget {
 class _GrillDashboardState extends State<GrillDashboard> {
   late final GrillController controller;
   final AlarmAudioService _alarmAudio = AlarmAudioService();
+  late final CookTimerController timerController;
+  late final CookPlanController planController;
+  late final CookbookImportService _cookbookImport;
+  StreamSubscription<CookbookRecipe>? _cookbookSubscription;
+  CookbookRecipe? _importedRecipe;
   List<ProbeAlertLevel> _probeAlerts = List.filled(3, ProbeAlertLevel.none);
   final Set<int> _acknowledgedTargetAlarms = {};
   bool _targetAlarmPlaying = false;
@@ -53,7 +63,96 @@ class _GrillDashboardState extends State<GrillDashboard> {
   void initState() {
     super.initState();
     controller = GrillController()..addListener(_changed);
+    timerController = CookTimerController(
+      onSchedule: (label, finishAt) =>
+          _alarmAudio.scheduleTimerAlarm(label: label, finishAt: finishAt),
+      onCancelSchedule: _alarmAudio.cancelTimerAlarm,
+      onFinished: _timerFinished,
+    )..addListener(_timerChanged);
+    planController = CookPlanController(
+      onSetSmokerTarget: controller.setGrillTarget,
+      onSetProbeTarget: controller.setProbeTarget,
+      onStageReady: _planStageReady,
+    )..addListener(_planChanged);
+    _cookbookImport = CookbookImportService();
+    _cookbookSubscription = _cookbookImport.recipes.listen(
+      _receiveCookbookRecipe,
+    );
     controller.initialize();
+    timerController.initialize();
+    planController.initialize();
+    _cookbookImport.initialize();
+  }
+
+  void _receiveCookbookRecipe(CookbookRecipe recipe) {
+    if (!mounted) return;
+    planController.loadDraft(CookPlan.fromRecipe(recipe));
+    setState(() => _importedRecipe = recipe);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final messenger = ScaffoldMessenger.of(context);
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          behavior: SnackBarBehavior.floating,
+          content: Text('Imported ${recipe.name} from CookBook'),
+        ),
+      );
+    });
+  }
+
+  void _timerChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _planChanged() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _planStageReady(CookPlanStage stage) async {
+    await _alarmAudio.notifyTimerFinished('${stage.name} is ready to advance');
+    if (!mounted) return;
+    HapticFeedback.heavyImpact();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 10),
+        backgroundColor: const Color(0xffb26a00),
+        content: Text('${stage.name} is complete. Approval is required.'),
+      ),
+    );
+  }
+
+  Future<void> _approvePlan() async {
+    if (controller.phase != GrillConnectionPhase.connected ||
+        controller.powerOn != true) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          behavior: SnackBarBehavior.floating,
+          content: Text(
+            'Connect to the smoker and turn it on before starting automation.',
+          ),
+        ),
+      );
+      return;
+    }
+    await planController.approveAndStart();
+  }
+
+  Future<void> _timerFinished(String label) async {
+    await _alarmAudio.notifyTimerFinished(label);
+    if (!mounted) return;
+    HapticFeedback.heavyImpact();
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(
+      SnackBar(
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 8),
+        backgroundColor: Theme.of(context).colorScheme.error,
+        content: Text('$label finished'),
+      ),
+    );
   }
 
   void _changed() {
@@ -73,6 +172,12 @@ class _GrillDashboardState extends State<GrillDashboard> {
       }
     }
     _probeAlerts = nextAlerts;
+    unawaited(
+      planController.updateTelemetry(
+        chamberTemperature: controller.grillTemperature,
+        probeTemperatures: controller.probeTemperatures,
+      ),
+    );
     final grillTemperature = controller.grillTemperature;
     final grillTarget = controller.grillTarget;
     final reachedGrillTarget =
@@ -207,6 +312,12 @@ class _GrillDashboardState extends State<GrillDashboard> {
   void dispose() {
     controller.removeListener(_changed);
     controller.dispose();
+    timerController.removeListener(_timerChanged);
+    timerController.dispose();
+    planController.removeListener(_planChanged);
+    planController.dispose();
+    unawaited(_cookbookSubscription?.cancel());
+    unawaited(_cookbookImport.dispose());
     _alarmAudio.dispose();
     super.dispose();
   }
@@ -234,6 +345,25 @@ class _GrillDashboardState extends State<GrillDashboard> {
                   _PowerCard(controller: controller),
                   const SizedBox(height: 16),
                   _GrillTemperatureCard(controller: controller),
+                  const SizedBox(height: 16),
+                  _CookTimerCard(controller: timerController),
+                  if (planController.status == CookPlanStatus.active ||
+                      planController.status == CookPlanStatus.paused ||
+                      planController.status == CookPlanStatus.completed) ...[
+                    const SizedBox(height: 16),
+                    _ActiveCookPlanCard(controller: planController),
+                  ] else if (_importedRecipe case final recipe?) ...[
+                    const SizedBox(height: 16),
+                    _CookbookRecipeCard(
+                      recipe: recipe,
+                      controller: planController,
+                      onApprove: _approvePlan,
+                      onDismiss: () {
+                        planController.cancel();
+                        setState(() => _importedRecipe = null);
+                      },
+                    ),
+                  ],
                   const SizedBox(height: 16),
                   Text(
                     'Food probes',
@@ -268,6 +398,650 @@ class _GrillDashboardState extends State<GrillDashboard> {
                   _AdvancedCard(controller: controller),
                 ],
               ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CookbookRecipeCard extends StatelessWidget {
+  const _CookbookRecipeCard({
+    required this.recipe,
+    required this.controller,
+    required this.onApprove,
+    required this.onDismiss,
+  });
+
+  final CookbookRecipe recipe;
+  final CookPlanController controller;
+  final Future<void> Function() onApprove;
+  final VoidCallback onDismiss;
+
+  @override
+  Widget build(BuildContext context) => Card.filled(
+    color: const Color(0xfffff1e8),
+    child: Padding(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.menu_book_outlined,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'IMPORTED FROM COOKBOOK',
+                      style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                        color: Theme.of(context).colorScheme.primary,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: .8,
+                      ),
+                    ),
+                    Text(
+                      recipe.name,
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                tooltip: 'Dismiss imported recipe',
+                onPressed: onDismiss,
+                icon: const Icon(Icons.close),
+              ),
+            ],
+          ),
+          if (recipe.cookMinutes > 0) ...[
+            const SizedBox(height: 4),
+            Text('Cook time: ${recipe.cookMinutes} minutes'),
+          ],
+          const SizedBox(height: 14),
+          Text(
+            'Suggested cook plan',
+            style: Theme.of(
+              context,
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 8),
+          if (controller.plan?.stages.isEmpty ?? true)
+            const Text(
+              'No smoker stages were detected automatically. Review the '
+              'recipe directions before cooking.',
+            )
+          else
+            for (
+              var index = 0;
+              index < (controller.plan?.stages.length ?? 0);
+              index++
+            )
+              _CookbookStageRow(
+                number: index + 1,
+                stage: controller.plan!.stages[index],
+                onChanged: (stage) => controller.updateStage(index, stage),
+              ),
+          const SizedBox(height: 14),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: controller.plan?.stages.isEmpty ?? true
+                  ? null
+                  : onApprove,
+              icon: const Icon(Icons.play_circle_outline),
+              label: const Text('Approve & start cook plan'),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Review every stage. Imported stages ask before advancing.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class _CookbookStageRow extends StatelessWidget {
+  const _CookbookStageRow({
+    required this.number,
+    required this.stage,
+    required this.onChanged,
+  });
+
+  final int number;
+  final CookPlanStage stage;
+  final ValueChanged<CookPlanStage> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final endText = switch (stage.condition) {
+      CookPlanCondition.chamberTemperature =>
+        'until Grill reaches ${stage.probeTarget ?? stage.smokerTarget}°F',
+      CookPlanCondition.duration =>
+        'for ${stage.duration?.inMinutes ?? 0} minutes',
+      CookPlanCondition.probeTemperature =>
+        'until Probe ${stage.probe} reaches ${stage.probeTarget}°F',
+      CookPlanCondition.manual => 'until manually advanced',
+    };
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          CircleAvatar(
+            radius: 13,
+            backgroundColor: Theme.of(context).colorScheme.primary,
+            foregroundColor: Colors.white,
+            child: Text(
+              '$number',
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              '${stage.name}: ${stage.smokerTarget}°F $endText · '
+              '${_advanceModeText(stage.advanceMode)}',
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+          ),
+          PopupMenuButton<CookPlanAdvanceMode>(
+            tooltip: 'Choose advancement behavior',
+            initialValue: stage.advanceMode,
+            onSelected: (mode) {
+              onChanged(
+                stage.copyWith(
+                  advanceMode: mode,
+                  condition:
+                      stage.condition == CookPlanCondition.manual &&
+                          mode != CookPlanAdvanceMode.manualOnly
+                      ? CookPlanCondition.chamberTemperature
+                      : stage.condition,
+                ),
+              );
+            },
+            itemBuilder: (context) => [
+              for (final mode in CookPlanAdvanceMode.values)
+                PopupMenuItem(value: mode, child: Text(_advanceModeText(mode))),
+            ],
+          ),
+          IconButton(
+            tooltip: 'Edit step',
+            onPressed: () async {
+              final updated = await _editCookPlanStep(context, stage);
+              if (updated != null) onChanged(updated);
+            },
+            icon: const Icon(Icons.edit_outlined),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+String _advanceModeText(CookPlanAdvanceMode mode) => switch (mode) {
+  CookPlanAdvanceMode.manualOnly => 'Manual Advance',
+  CookPlanAdvanceMode.askFirst => 'Ask before advancing',
+  CookPlanAdvanceMode.automatic => 'Advance automatically',
+};
+
+Future<CookPlanStage?> _editCookPlanStep(
+  BuildContext context,
+  CookPlanStage stage,
+) async {
+  final grillController = TextEditingController(text: '${stage.smokerTarget}');
+  final timeController = TextEditingController(
+    text: stage.duration == null ? '' : '${stage.duration!.inMinutes}',
+  );
+  var probe = stage.probe;
+  final probeTargetController = TextEditingController(
+    text: stage.probeTarget == null ? '' : '${stage.probeTarget}',
+  );
+  var error = '';
+
+  final result = await showDialog<CookPlanStage>(
+    context: context,
+    builder: (context) => StatefulBuilder(
+      builder: (context, setDialogState) => AlertDialog(
+        title: Text('Edit ${stage.name}'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(
+                controller: grillController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'Grill set temperature',
+                  suffixText: '°F',
+                  helperText: 'Target temperature sent to the grill.',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: timeController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'Time (optional)',
+                  suffixText: 'minutes',
+                  helperText: 'Leave blank for no timer.',
+                ),
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<int>(
+                initialValue: probe,
+                decoration: const InputDecoration(
+                  labelText: 'Evaluation sensor',
+                  helperText: 'Determines when this step is ready to advance.',
+                ),
+                items: [
+                  for (var number = 0; number <= 3; number++)
+                    DropdownMenuItem(
+                      value: number,
+                      child: Text(number == 0 ? 'Grill' : 'Probe $number'),
+                    ),
+                ],
+                onChanged: (value) =>
+                    setDialogState(() => probe = value ?? probe),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: probeTargetController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'Evaluation target (optional)',
+                  suffixText: '°F',
+                  helperText: 'Leave blank when no sensor target is used.',
+                ),
+              ),
+              if (error.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Text(
+                  error,
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.error,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final grillTarget = int.tryParse(grillController.text.trim());
+              final timeText = timeController.text.trim();
+              final probeTargetText = probeTargetController.text.trim();
+              final minutes = timeText.isEmpty ? null : int.tryParse(timeText);
+              final probeTarget = probeTargetText.isEmpty
+                  ? null
+                  : int.tryParse(probeTargetText);
+
+              if (grillTarget == null ||
+                  grillTarget < 150 ||
+                  grillTarget > 500) {
+                setDialogState(
+                  () => error = 'Grill temperature must be 150–500°F.',
+                );
+                return;
+              }
+              if (timeText.isNotEmpty &&
+                  (minutes == null || minutes <= 0 || minutes > 1440)) {
+                setDialogState(() => error = 'Time must be 1–1,440 minutes.');
+                return;
+              }
+              final evaluationMinimum = probe == 0 ? 150 : 32;
+              final evaluationMaximum = probe == 0 ? 500 : 212;
+              if (probeTargetText.isNotEmpty &&
+                  (probeTarget == null ||
+                      probeTarget < evaluationMinimum ||
+                      probeTarget > evaluationMaximum)) {
+                setDialogState(
+                  () => error = probe == 0
+                      ? 'Grill evaluation target must be 150–500°F.'
+                      : 'Probe target must be 32–212°F.',
+                );
+                return;
+              }
+              if (minutes != null && probeTarget != null) {
+                setDialogState(
+                  () => error =
+                      'Use either a timer or a probe target for one step, '
+                      'not both.',
+                );
+                return;
+              }
+              if (stage.advanceMode != CookPlanAdvanceMode.manualOnly &&
+                  minutes == null &&
+                  probeTarget == null) {
+                setDialogState(
+                  () => error =
+                      'Enter a time or evaluation target, or choose '
+                      'Manual Advance.',
+                );
+                return;
+              }
+
+              final condition = probeTarget != null
+                  ? probe == 0
+                        ? CookPlanCondition.chamberTemperature
+                        : CookPlanCondition.probeTemperature
+                  : minutes != null
+                  ? CookPlanCondition.duration
+                  : stage.advanceMode == CookPlanAdvanceMode.manualOnly
+                  ? CookPlanCondition.manual
+                  : CookPlanCondition.chamberTemperature;
+              Navigator.pop(
+                context,
+                CookPlanStage(
+                  name: stage.name,
+                  instructions: stage.instructions,
+                  smokerTarget: grillTarget,
+                  condition: condition,
+                  advanceMode: stage.advanceMode,
+                  duration: minutes == null ? null : Duration(minutes: minutes),
+                  probe: probe,
+                  probeTarget: probeTarget,
+                ),
+              );
+            },
+            child: const Text('Save step'),
+          ),
+        ],
+      ),
+    ),
+  );
+  grillController.dispose();
+  timeController.dispose();
+  probeTargetController.dispose();
+  return result;
+}
+
+class _ActiveCookPlanCard extends StatelessWidget {
+  const _ActiveCookPlanCard({required this.controller});
+
+  final CookPlanController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final plan = controller.plan;
+    final stage = controller.currentStage;
+    if (plan == null || stage == null) return const SizedBox.shrink();
+    final complete = controller.status == CookPlanStatus.completed;
+    final nextIndex = controller.currentStageIndex + 1;
+    final nextStage = nextIndex < plan.stages.length
+        ? plan.stages[nextIndex]
+        : null;
+    final condition = switch (stage.condition) {
+      CookPlanCondition.manual => 'Waiting for you',
+      CookPlanCondition.chamberTemperature =>
+        'Waiting for Grill to reach '
+            '${stage.probeTarget ?? stage.smokerTarget}°F',
+      CookPlanCondition.duration =>
+        '${formatTimerDuration(controller.stageRemaining ?? Duration.zero)} remaining',
+      CookPlanCondition.probeTemperature =>
+        'Waiting for Probe ${stage.probe} to reach ${stage.probeTarget}°F',
+    };
+    return Card.filled(
+      color: controller.readyToAdvance
+          ? const Color(0xffffe0b2)
+          : const Color(0xfffff1e8),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              complete ? 'COOK PLAN COMPLETE' : 'AUTOMATION ACTIVE',
+              style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                color: Theme.of(context).colorScheme.primary,
+                fontWeight: FontWeight.w800,
+                letterSpacing: .8,
+              ),
+            ),
+            Text(
+              plan.name,
+              style: Theme.of(
+                context,
+              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              complete
+                  ? 'All stages finished'
+                  : 'Stage ${controller.currentStageIndex + 1} of '
+                        '${plan.stages.length}: ${stage.name}',
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+            ),
+            if (!complete) ...[
+              const SizedBox(height: 4),
+              Text(stage.instructions),
+              const SizedBox(height: 8),
+              Text(
+                '${stage.smokerTarget}°F · $condition',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              if (controller.readyToAdvance)
+                const Padding(
+                  padding: EdgeInsets.only(top: 8),
+                  child: Text(
+                    'Condition reached — waiting for your approval.',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                ),
+              if (nextStage != null) ...[
+                const SizedBox(height: 8),
+                Text('Next: ${nextStage.name} at ${nextStage.smokerTarget}°F'),
+              ],
+              const SizedBox(height: 14),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: controller.advance,
+                  icon: const Icon(Icons.skip_next),
+                  label: Text(
+                    nextStage == null
+                        ? 'Finish cook'
+                        : controller.readyToAdvance
+                        ? 'Approve & start ${nextStage.name}'
+                        : 'Advance now to ${nextStage.name}',
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: controller.status == CookPlanStatus.paused
+                          ? controller.resume
+                          : controller.pause,
+                      icon: Icon(
+                        controller.status == CookPlanStatus.paused
+                            ? Icons.play_arrow
+                            : Icons.pause,
+                      ),
+                      label: Text(
+                        controller.status == CookPlanStatus.paused
+                            ? 'Resume'
+                            : 'Pause',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => _confirmCancelPlan(context, controller),
+                      child: const Text('Cancel cook'),
+                    ),
+                  ),
+                ],
+              ),
+            ] else ...[
+              const SizedBox(height: 12),
+              FilledButton(
+                onPressed: controller.cancel,
+                child: const Text('Close cook plan'),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+Future<void> _confirmCancelPlan(
+  BuildContext context,
+  CookPlanController controller,
+) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Cancel this cook?'),
+      content: const Text(
+        'Automation will stop. The smoker will remain at its current target.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Keep cooking'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, true),
+          child: const Text('Cancel cook'),
+        ),
+      ],
+    ),
+  );
+  if (confirmed == true) await controller.cancel();
+}
+
+class _CookTimerCard extends StatelessWidget {
+  const _CookTimerCard({required this.controller});
+
+  final CookTimerController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final isCompleted = controller.status == CookTimerStatus.completed;
+    final statusLabel = switch (controller.status) {
+      CookTimerStatus.idle => 'Ready',
+      CookTimerStatus.running => 'Running',
+      CookTimerStatus.paused => 'Paused',
+      CookTimerStatus.completed => 'Finished',
+    };
+    final modeLabel = controller.mode == CookTimerMode.countUp
+        ? 'Count up'
+        : 'Count down';
+    return Card.filled(
+      color: isCompleted
+          ? Theme.of(context).colorScheme.errorContainer
+          : Colors.white,
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  controller.mode == CookTimerMode.countUp
+                      ? Icons.timer_outlined
+                      : Icons.hourglass_bottom,
+                  color: isCompleted
+                      ? Theme.of(context).colorScheme.error
+                      : Theme.of(context).colorScheme.primary,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        controller.label,
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w700),
+                      ),
+                      Text('$modeLabel · $statusLabel'),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Configure timer',
+                  onPressed: controller.canConfigure
+                      ? () => _timerSetupDialog(context, controller)
+                      : null,
+                  icon: const Icon(Icons.tune),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Center(
+              child: Text(
+                formatTimerDuration(controller.displayed),
+                semanticsLabel:
+                    '$modeLabel timer ${formatTimerDuration(controller.displayed)}',
+                style: Theme.of(context).textTheme.displayMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                  color: isCompleted
+                      ? Theme.of(context).colorScheme.error
+                      : null,
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                FilledButton.icon(
+                  onPressed: controller.isRunning
+                      ? controller.pause
+                      : controller.startOrResume,
+                  icon: Icon(
+                    controller.isRunning ? Icons.pause : Icons.play_arrow,
+                  ),
+                  label: Text(
+                    controller.isRunning
+                        ? 'Pause'
+                        : controller.status == CookTimerStatus.paused
+                        ? 'Resume'
+                        : controller.status == CookTimerStatus.completed
+                        ? 'Restart'
+                        : 'Start',
+                  ),
+                ),
+                const SizedBox(width: 10),
+                OutlinedButton.icon(
+                  onPressed:
+                      controller.status == CookTimerStatus.idle &&
+                          controller.displayed == Duration.zero
+                      ? null
+                      : controller.reset,
+                  icon: const Icon(Icons.replay),
+                  label: const Text('Reset'),
+                ),
+              ],
             ),
           ],
         ),
@@ -320,6 +1094,214 @@ class _ConnectionBadge extends StatelessWidget {
       ),
     );
   }
+}
+
+Future<void> _timerSetupDialog(
+  BuildContext context,
+  CookTimerController controller,
+) async {
+  final result =
+      await showDialog<({CookTimerMode mode, String label, Duration duration})>(
+        context: context,
+        builder: (context) => _TimerSetupDialog(
+          initialMode: controller.mode,
+          initialLabel: controller.label,
+          initialDuration: controller.countdownDuration,
+        ),
+      );
+  if (result == null) return;
+  await controller.configure(
+    newMode: result.mode,
+    newLabel: result.label,
+    duration: result.duration,
+  );
+}
+
+class _TimerSetupDialog extends StatefulWidget {
+  const _TimerSetupDialog({
+    required this.initialMode,
+    required this.initialLabel,
+    required this.initialDuration,
+  });
+
+  final CookTimerMode initialMode;
+  final String initialLabel;
+  final Duration initialDuration;
+
+  @override
+  State<_TimerSetupDialog> createState() => _TimerSetupDialogState();
+}
+
+class _TimerSetupDialogState extends State<_TimerSetupDialog> {
+  late CookTimerMode mode;
+  late final TextEditingController labelController;
+  late final TextEditingController hoursController;
+  late final TextEditingController minutesController;
+  late final TextEditingController secondsController;
+
+  @override
+  void initState() {
+    super.initState();
+    mode = widget.initialMode;
+    labelController = TextEditingController(text: widget.initialLabel);
+    hoursController = TextEditingController(
+      text: widget.initialDuration.inHours.toString(),
+    );
+    minutesController = TextEditingController(
+      text: (widget.initialDuration.inMinutes % 60).toString(),
+    );
+    secondsController = TextEditingController(
+      text: (widget.initialDuration.inSeconds % 60).toString(),
+    );
+  }
+
+  @override
+  void dispose() {
+    labelController.dispose();
+    hoursController.dispose();
+    minutesController.dispose();
+    secondsController.dispose();
+    super.dispose();
+  }
+
+  Duration? get duration {
+    final hours = int.tryParse(hoursController.text) ?? 0;
+    final minutes = int.tryParse(minutesController.text) ?? 0;
+    final seconds = int.tryParse(secondsController.text) ?? 0;
+    if (hours < 0 ||
+        hours > 99 ||
+        minutes < 0 ||
+        minutes > 59 ||
+        seconds < 0 ||
+        seconds > 59) {
+      return null;
+    }
+    final value = Duration(hours: hours, minutes: minutes, seconds: seconds);
+    if (mode == CookTimerMode.countDown && value == Duration.zero) return null;
+    return value;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final validDuration = duration;
+    return AlertDialog(
+      title: const Text('Configure timer'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SegmentedButton<CookTimerMode>(
+              segments: const [
+                ButtonSegment(
+                  value: CookTimerMode.countUp,
+                  icon: Icon(Icons.timer_outlined),
+                  label: Text('Count up'),
+                ),
+                ButtonSegment(
+                  value: CookTimerMode.countDown,
+                  icon: Icon(Icons.hourglass_bottom),
+                  label: Text('Count down'),
+                ),
+              ],
+              selected: {mode},
+              onSelectionChanged: (selection) =>
+                  setState(() => mode = selection.first),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: labelController,
+              maxLength: 40,
+              decoration: const InputDecoration(
+                labelText: 'Timer name',
+                hintText: 'Cook timer',
+              ),
+              onChanged: (_) => setState(() {}),
+            ),
+            if (mode == CookTimerMode.countDown) ...[
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  Expanded(
+                    child: _TimerNumberField(
+                      controller: hoursController,
+                      label: 'Hours',
+                      onChanged: () => setState(() {}),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _TimerNumberField(
+                      controller: minutesController,
+                      label: 'Minutes',
+                      onChanged: () => setState(() {}),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _TimerNumberField(
+                      controller: secondsController,
+                      label: 'Seconds',
+                      onChanged: () => setState(() {}),
+                    ),
+                  ),
+                ],
+              ),
+              if (validDuration == null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(
+                    'Enter 1 second to 99:59:59.',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+                ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: validDuration == null
+              ? null
+              : () => Navigator.pop(context, (
+                  mode: mode,
+                  label: labelController.text,
+                  duration: validDuration,
+                )),
+          child: const Text('Save'),
+        ),
+      ],
+    );
+  }
+}
+
+class _TimerNumberField extends StatelessWidget {
+  const _TimerNumberField({
+    required this.controller,
+    required this.label,
+    required this.onChanged,
+  });
+
+  final TextEditingController controller;
+  final String label;
+  final VoidCallback onChanged;
+
+  @override
+  Widget build(BuildContext context) => TextField(
+    controller: controller,
+    keyboardType: TextInputType.number,
+    inputFormatters: [
+      FilteringTextInputFormatter.digitsOnly,
+      LengthLimitingTextInputFormatter(2),
+    ],
+    decoration: InputDecoration(labelText: label),
+    onChanged: (_) => onChanged(),
+  );
 }
 
 class _SetupCard extends StatelessWidget {
@@ -580,6 +1562,9 @@ class _ProbeCard extends StatelessWidget {
                 ? GrillProtocol.maximumProbeFahrenheit
                 : GrillProtocol.maximumProbeCelsius,
             unit: controller.fahrenheit ? '°F' : '°C',
+            onClear: target >= 0
+                ? () => controller.clearProbeTarget(index + 1)
+                : null,
           );
         },
         child: Padding(
@@ -836,6 +1821,7 @@ Future<void> _temperatureDialog(
   required int minimum,
   required int maximum,
   required String unit,
+  VoidCallback? onClear,
 }) async {
   final result = await showDialog<int>(
     context: context,
@@ -845,6 +1831,7 @@ Future<void> _temperatureDialog(
       minimum: minimum,
       maximum: maximum,
       unit: unit,
+      onClear: onClear,
     ),
   );
   if (result != null) onSave(result);
@@ -857,6 +1844,7 @@ class _TemperatureDialog extends StatefulWidget {
     required this.minimum,
     required this.maximum,
     required this.unit,
+    this.onClear,
   });
 
   final int initial;
@@ -864,6 +1852,7 @@ class _TemperatureDialog extends StatefulWidget {
   final int minimum;
   final int maximum;
   final String unit;
+  final VoidCallback? onClear;
 
   @override
   State<_TemperatureDialog> createState() => _TemperatureDialogState();
@@ -947,6 +1936,14 @@ class _TemperatureDialogState extends State<_TemperatureDialog> {
       ],
     ),
     actions: [
+      if (widget.onClear != null)
+        TextButton(
+          onPressed: () {
+            widget.onClear!();
+            Navigator.pop(context);
+          },
+          child: const Text('Clear target'),
+        ),
       TextButton(
         onPressed: () => Navigator.pop(context),
         child: const Text('Cancel'),

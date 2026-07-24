@@ -1,9 +1,12 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:smarter_smoker/controllers/grill_controller.dart';
 import 'package:smarter_smoker/protocol/grill_protocol.dart';
 import 'package:smarter_smoker/services/grill_ble_discovery.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   test('known query frames match the vendor app', () {
     expect(GrillProtocol.toHex(GrillProtocol.queryStatus), 'FA06FE0B01FF');
     expect(
@@ -95,6 +98,22 @@ void main() {
       GrillController.probeAlertLevel(current: 165, target: 165),
       ProbeAlertLevel.targetReached,
     );
+  });
+
+  test('a probe target can be cleared and removed from storage', () async {
+    SharedPreferences.setMockInitialValues({});
+    final controller = GrillController();
+    await controller.initialize();
+
+    controller.setProbeTarget(1, 165);
+    await Future<void>.delayed(Duration.zero);
+    controller.clearProbeTarget(1);
+    await Future<void>.delayed(Duration.zero);
+
+    final preferences = await SharedPreferences.getInstance();
+    expect(controller.probeTargets[0], -1);
+    expect(preferences.getInt('probe_target_1'), isNull);
+    controller.dispose();
   });
 
   test('out-of-range probe readings are treated as disconnected', () {

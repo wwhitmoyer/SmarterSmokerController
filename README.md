@@ -11,6 +11,7 @@ source builds from a single project. This project was built with ChatGPT and Cod
 - BLE Wi-Fi provisioning for 2.4 GHz networks
 - Automatic grill status and temperature refresh
 - Grill power and temperature control
+- Persistent count-up and count-down cook timer with Android completion alerts
 - Three food-probe readings with locally stored software alarm targets
 - Visual, audible, and haptic probe pre-alarms and target alarms
 - Public lock-screen notifications for probe alerts on Android

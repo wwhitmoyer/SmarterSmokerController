@@ -236,9 +236,24 @@ class GrillController extends ChangeNotifier {
     unawaited(_persistProbeTarget(probe, value));
   }
 
+  void clearProbeTarget(int probe) {
+    if (probe < 1 || probe > probeTargets.length) {
+      throw RangeError.range(probe, 1, probeTargets.length, 'probe');
+    }
+    probeTargets = List<int>.from(probeTargets)..[probe - 1] = -1;
+    _log('Probe $probe software target cleared');
+    notifyListeners();
+    unawaited(_removeProbeTarget(probe));
+  }
+
   Future<void> _persistProbeTarget(int probe, int value) async {
     final preferences = await SharedPreferences.getInstance();
     await preferences.setInt('$_probeTargetKeyPrefix$probe', value);
+  }
+
+  Future<void> _removeProbeTarget(int probe) async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.remove('$_probeTargetKeyPrefix$probe');
   }
 
   void setUnits({required bool useFahrenheit}) {
