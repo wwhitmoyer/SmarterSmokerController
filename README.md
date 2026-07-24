@@ -21,6 +21,18 @@ source builds from a single project.
 See [docs/wifi-mqtt-protocol.md](docs/wifi-mqtt-protocol.md) for the
 reverse-engineered protocol notes.
 
+## Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/dashboard.png" width="31%" alt="Smarter Smoker dashboard">
+  <img src="docs/screenshots/temperature-dialog.png" width="31%" alt="Grill temperature control">
+  <img src="docs/screenshots/probe-alert.png" width="31%" alt="Probe target alarm and notification">
+</p>
+
+<p align="center">
+  Dashboard &nbsp; • &nbsp; Temperature control &nbsp; • &nbsp; Probe alarm
+</p>
+
 ## Development
 
 From the repository root:
